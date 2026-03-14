@@ -29,7 +29,7 @@ they continue to use AWS SDKs or tools while actually interacting with Scaleway.
 
 Install dependencies:
 ```bash
-pip install fastapi uvicorn httpx botocore structlog
+pip install -r requirements.txt
 ```
 
 ## Configuration
