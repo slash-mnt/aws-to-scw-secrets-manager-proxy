@@ -43,14 +43,16 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Set your Scaleway API key and AWS region as environment variables:
+Set your Scaleway project ID as environment variables:
 
 ```
-export SCW_API_KEY="your_scaleway_api_key"
-export SCW_REGION="fr-par"
 export SCW_PROJECT_ID="xx-xx-xx"
-export AWS_REGION="eu-west-3"
 ```
+
+Others environment variables are optional:
+
+* `DEFAULT_SECRET_PATH`: holds the secret path within the Scaleway Secrets Manager (default to: `/minio/kes/kes`)
+* `AWS_REGION`: the region displayed in the ARN (defaults to `eu-west-3`)
 
 ## Run the proxy
 
@@ -92,6 +94,6 @@ keystore:
          region:   fr-par
          kmskey:   ""
          credentials:
-           accesskey: "<whatever you want>"
-           secretkey: "<SCW_TOKEN_API>"
+           accesskey: "<SCW_TOKEN_API>"
+           secretkey: "<whatever you want, it will be discarded>"
 ```

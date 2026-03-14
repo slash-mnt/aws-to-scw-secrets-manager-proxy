@@ -31,22 +31,18 @@ logging_config["loggers"][__name__] = {
 app = FastAPI()
 
 # Scaleway configuration
-SCW_API_KEY = os.getenv("SCW_API_KEY", "scaleway_token")
 SCW_PROJECT_ID = os.getenv("SCW_PROJECT_ID", "scaleway_project_id")
-SCW_REGION = os.getenv("SCW_REGION", "fr-par")
-SCW_BASE_URL = f"https://api.scaleway.com/secret-manager/v1beta1/regions/{SCW_REGION}/secrets"
-
 DEFAULT_SECRET_PATH = os.getenv("DEFAULT_SECRET_PATH", "/minio/kes/key")
 
 # AWS configuration to validate signatures
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-1")
+AWS_REGION = os.getenv("AWS_REGION", "eu-west-3")
 
 # Use a small cache object to store secret ids, avoiding listing secrets everytime.
 # Secret names are unique within a project.
 # Cache keys are the secret name, values are their ids.
 cache_ids = {}
 
-async def forward_to_scaleway(method: str, path: str, payload: dict):
+async def forward_to_scaleway(method: str, path: str, payload: dict, region: str, api_token: str):
     """
     Forwards an HTTP request to a Scaleway API endpoint and returns the response.
 
@@ -70,10 +66,11 @@ async def forward_to_scaleway(method: str, path: str, payload: dict):
     """
     async with httpx.AsyncClient() as client:
         scw_headers = {
-            "X-Auth-Token": SCW_API_KEY,
+            "X-Auth-Token": api_token,
             "Content-Type": "application/json",
         }
-        scw_url = f"{SCW_BASE_URL}{path}"
+        scw_base_url = f"https://api.scaleway.com/secret-manager/v1beta1/regions/{region}/secrets"
+        scw_url = f"{scw_base_url}{path}"
 
         logger.debug(f"{method} on {scw_url} with headers {scw_headers}: {payload}")
 
@@ -119,6 +116,8 @@ async def validate_aws_signature(request: Request):
     if not match:
         logger.error("Wrong Autorization header format")
         raise HTTPException(status_code=401, detail="Wrong Autorization header format")
+
+    logger.info(match.groups())
 
     access_key, date, region, service, signed_headers, signature = match.groups()
 
@@ -195,7 +194,6 @@ async def proxy(request: Request):
     # Validate AWS signature to ensure legitimacy
     try:
         aws_credentials = await validate_aws_signature(request)
-        logger.debug(f"Valid AWS Signature for {aws_credentials['access_key']}")
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -222,7 +220,9 @@ async def proxy(request: Request):
                     "protected": False,
                     "path": DEFAULT_SECRET_PATH,
                     "description": None
-                }
+                },
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
             scw_secret_data = scw_secret_response.json()
 
@@ -236,7 +236,9 @@ async def proxy(request: Request):
                 path=f"/{scw_secret_data["id"]}/versions",
                 payload={
                     "data": base64_secret_content.decode() # cast to string
-                }
+                },
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
         case "secretsmanager.GetSecretValue":
             logger.info(f"Getting secret value of {aws_payload["SecretId"]}")
@@ -245,7 +247,9 @@ async def proxy(request: Request):
             scw_list_response = await forward_to_scaleway(
                 method="get",
                 path=f"?project_id={SCW_PROJECT_ID}",
-                payload={}
+                payload={},
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
 
             scw_list_data = scw_list_response.json()
@@ -267,7 +271,9 @@ async def proxy(request: Request):
             scw_main_response = await forward_to_scaleway(
                 method="get",
                 path=f"/{real_secret_id}/versions/latest_enabled/access?project_id={SCW_PROJECT_ID}",
-                payload={}
+                payload={},
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
         case "secretsmanager.ListSecrets":
             logger.info(f"Listing secrets for project {SCW_PROJECT_ID}")
@@ -275,7 +281,9 @@ async def proxy(request: Request):
             scw_main_response = await forward_to_scaleway(
                 method="get",
                 path=f"?project_id={SCW_PROJECT_ID}",
-                payload={}
+                payload={},
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
 
             # In case, we're adding secret ids to the cache.
@@ -295,7 +303,7 @@ async def proxy(request: Request):
     match aws_method:
         case "secretsmanager.CreateSecret":
             aws_response = {
-                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{aws_payload["Name"]}",
+                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{SCW_PROJECT_ID}:secret:{aws_payload["Name"]}",
                 "Name": aws_payload["Name"],
                 "VersionId": str(uuid.uuid4())
             }
@@ -304,11 +312,13 @@ async def proxy(request: Request):
             secret_metadata_response = await forward_to_scaleway(
                 method="get",
                 path=f"/{real_secret_id}?project_id={SCW_PROJECT_ID}",
-                payload={}
+                payload={},
+                region=aws_credentials["region"],
+                api_token=aws_credentials["access_key"]
             )
             secret_metadata_data = secret_metadata_response.json()
             aws_response = {
-                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{secret_metadata_data["name"]}",
+                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{SCW_PROJECT_ID}:secret:{secret_metadata_data["name"]}",
                 "Name": secret_metadata_data["name"],
                 "CreatedDate": secret_metadata_data["created_at"],
                 "SecretString": base64.b64decode(scw_data["data"]),
@@ -319,13 +329,13 @@ async def proxy(request: Request):
             aws_response = {
                 "SecretList": [
                     {
-                        "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{secret["name"]}",
+                        "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{SCW_PROJECT_ID}:secret:{secret["name"]}",
                         "Name": secret["name"],
                         "LastChangedDate": secret["updated_at"],
                         "LastAccessedDate": secret["updated_at"],
                         "Tags": secret["tags"],
                         "CreatedDate": secret["created_at"],
-                        "PrimaryRegion": SCW_REGION,
+                        "PrimaryRegion": aws_credentials["region"],
                         "SecretVersionsToStages": {
                             f"{str(uuid.uuid4())}": ["AWSCURRENT"] # Generatin a random uuid because the only uuid is the SCW secret id, but it's not relevant here.
                         }
