@@ -41,7 +41,9 @@ DEFAULT_SECRET_PATH = os.getenv("DEFAULT_SECRET_PATH", "/minio/kes/key")
 # AWS configuration to validate signatures
 AWS_REGION = os.getenv("AWS_REGION", "eu-west-1")
 
-# Use a small cache object to store secret ids, avoiding listing secrets everytime
+# Use a small cache object to store secret ids, avoiding listing secrets everytime.
+# Secret names are unique within a project.
+# Cache keys are the secret name, values are their ids.
 cache_ids = {}
 
 async def forward_to_scaleway(method: str, path: str, payload: dict):
@@ -264,7 +266,7 @@ async def proxy(request: Request):
             # Get the Secret latest version
             scw_main_response = await forward_to_scaleway(
                 method="get",
-                path=f"/{real_secret_id}/versions/latest_enabled/access",
+                path=f"/{real_secret_id}/versions/latest_enabled/access?project_id={SCW_PROJECT_ID}",
                 payload={}
             )
         case "secretsmanager.ListSecrets":
@@ -275,6 +277,11 @@ async def proxy(request: Request):
                 path=f"?project_id={SCW_PROJECT_ID}",
                 payload={}
             )
+
+            # In case, we're adding secret ids to the cache.
+            for secret in scw_main_response.json()["secrets"]:
+                logger.info(f"Adding {secret["name"]} secret id to cache.")
+                cache_ids[secret["name"]] = secret["id"]
         case _:
             raise HTTPException(status_code=405, detail=f"AWS method not allowed.")
 
@@ -305,7 +312,7 @@ async def proxy(request: Request):
                 "Name": secret_metadata_data["name"],
                 "CreatedDate": secret_metadata_data["created_at"],
                 "SecretString": base64.b64decode(scw_data["data"]),
-                "VersionId": str(uuid.uuid4()),
+                "VersionId": str(uuid.uuid4()), # Generating a random uuid because revisions are integer in SCW.
                 "VersionStages": ["AWSCURRENT"]
             }
         case "secretsmanager.ListSecrets":
@@ -320,7 +327,7 @@ async def proxy(request: Request):
                         "CreatedDate": secret["created_at"],
                         "PrimaryRegion": SCW_REGION,
                         "SecretVersionsToStages": {
-                            f"{str(uuid.uuid4())}": ["AWSCURRENT"]
+                            f"{str(uuid.uuid4())}": ["AWSCURRENT"] # Generatin a random uuid because the only uuid is the SCW secret id, but it's not relevant here.
                         }
                     }
                     for secret in scw_data["secrets"]
