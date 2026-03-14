@@ -3,14 +3,31 @@ from botocore.auth import SigV4Auth
 from botocore.credentials import Credentials
 from botocore.exceptions import ClientError
 from botocore.awsrequest import AWSRequest
-import datetime
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import JSONResponse
 import httpx
 import logging
 import os
 import re
+import uuid
+import uvicorn
 
+debug = False
+logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
 logger = logging.getLogger(__name__)
+logging_config = uvicorn.config.LOGGING_CONFIG
+
+if debug:
+    logging_config["loggers"]["uvicorn"]["level"] = "DEBUG"
+    logging_config["loggers"]["uvicorn.error"]["level"] = "DEBUG"
+    logging_config["loggers"]["uvicorn.access"]["level"] = "DEBUG"
+
+logging_config["loggers"][__name__] = {
+    "handlers": ["default"],
+    "level": "DEBUG" if debug else "INFO",
+    "propagate": False,
+}
+
 app = FastAPI()
 
 # Scaleway configuration
@@ -19,10 +36,15 @@ SCW_PROJECT_ID = os.getenv("SCW_PROJECT_ID", "scaleway_project_id")
 SCW_REGION = os.getenv("SCW_REGION", "fr-par")
 SCW_BASE_URL = f"https://api.scaleway.com/secret-manager/v1beta1/regions/{SCW_REGION}/secrets"
 
+DEFAULT_SECRET_PATH = os.getenv("DEFAULT_SECRET_PATH", "/minio/kes/key")
+
 # AWS configuration to validate signatures
 AWS_REGION = os.getenv("AWS_REGION", "eu-west-1")
 
-async def forward_to_scaleway(method: str, path: str, payload: dict, headers: dict):
+# Use a small cache object to store secret ids, avoiding listing secrets everytime
+cache_ids = {}
+
+async def forward_to_scaleway(method: str, path: str, payload: dict):
     """
     Asynchronously forwards a request to the Scaleway API using the provided HTTP method,
     endpoint path, payload, and headers. This method constructs Scaleway-specific headers,
@@ -50,16 +72,21 @@ async def forward_to_scaleway(method: str, path: str, payload: dict, headers: di
             "X-Auth-Token": SCW_API_KEY,
             "Content-Type": "application/json",
         }
-        scw_url = f"{SCW_BASE_URL}/{path}"
+        scw_url = f"{SCW_BASE_URL}{path}"
 
-        logger.debug(f"{method} on {scw_url} with headers {scw_headers}")
+        logger.debug(f"{method} on {scw_url} with headers {scw_headers}: {payload}")
 
         if method == "get":
             response = await client.request(method, scw_url, headers=scw_headers)
         else:
             response = await client.request(method, scw_url, headers=scw_headers, json=payload)
-        return response
 
+        logger.debug(f"Received response with status {response.status_code}: {response.json()}")
+
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.json())
+
+        return response
 
 async def validate_aws_signature(request: Request):
     """
@@ -148,7 +175,23 @@ async def proxy(request: Request):
     :raises HTTPException: If the requested path is unsupported, a 404 HTTP error is raised.
     """
 
-    # Validate AWS signature
+    method = request.method
+    path = request.url.path
+    headers = dict(request.headers)
+    body = await request.body()
+
+    logger.debug(f"Method: {method}")
+    logger.debug(f"Path: {path}")
+    logger.debug(f"Headers: {headers}")
+    logger.debug(f"Body: {body}")
+
+    # Retrieves AWS headers
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header == "":
+        logger.debug("Answering 200 OK on empty request")
+        return {}
+
+    # Validate AWS signature to ensure legitimacy
     try:
         aws_credentials = await validate_aws_signature(request)
         logger.debug(f"Valid AWS Signature for {aws_credentials['access_key']}")
@@ -159,60 +202,146 @@ async def proxy(request: Request):
 
     aws_payload = await request.json()
 
-    if "SecretId" in aws_payload:
-        # GetSecretValue mapping
-        scw_path = f"{aws_payload["SecretId"]}/versions/latest/access"
-        method = "get"
-        aws_method = "GetSecretValue"
-        payload = {}
-    else:
-        # ListSecrets mapping
-        scw_path = f"?project_id={SCW_PROJECT_ID}"
-        method = "get"
-        aws_method = "ListSecrets"
-        payload = {}
+    aws_method = headers["x-amz-target"]
+    scw_main_response = None
+    real_secret_id = None
 
-    if scw_path:
-        # 3. Call Scaleway
-        scw_response = await forward_to_scaleway(method, scw_path, payload, request.headers)
+    match aws_method:
+        case "secretsmanager.CreateSecret":
+            logger.info(f"Creating a Secret named {aws_payload['Name']} in {DEFAULT_SECRET_PATH}")
 
-        scw_data = scw_response.json()
-        aws_response = scw_data
+            # Create the Secret
+            scw_secret_response = await forward_to_scaleway(
+                method="post",
+                path="",
+                payload={
+                    "name": aws_payload["Name"],
+                    "project_id": SCW_PROJECT_ID,
+                    "type": "opaque",
+                    "protected": False,
+                    "path": DEFAULT_SECRET_PATH,
+                    "description": None
+                }
+            )
+            scw_secret_data = scw_secret_response.json()
 
-        # 4. Map the Scaleway response to AWS response format
-        if aws_method == "GetSecretValue":
-            secret_metadata_response = await forward_to_scaleway(method, f"{aws_payload["SecretId"]}?project_id={SCW_PROJECT_ID}", payload, request.headers)
+            if not scw_secret_data["id"]:
+                raise HTTPException(status_code=500, detail=f"Secret created but wrong response format")
+
+            base64_secret_content = base64.b64encode(aws_payload["SecretString"].encode("utf-8"))
+            # Create a new version for the Secret containing sensitive data
+            scw_main_response = await forward_to_scaleway(
+                method="post",
+                path=f"/{scw_secret_data["id"]}/versions",
+                payload={
+                    "data": base64_secret_content.decode() # cast to string
+                }
+            )
+        case "secretsmanager.GetSecretValue":
+            logger.info(f"Getting secret value of {aws_payload["SecretId"]}")
+
+            # List Secrets to retrieve its id
+            scw_list_response = await forward_to_scaleway(
+                method="get",
+                path=f"?project_id={SCW_PROJECT_ID}",
+                payload={}
+            )
+
+            scw_list_data = scw_list_response.json()
+
+            try:
+                real_secret_id = cache_ids[aws_payload["SecretId"]]
+                logger.info(f"Using cache to retrieve secret {aws_payload["SecretId"]} id.")
+            except KeyError:
+                logger.info(f"Fetching for the first time the id of secret {aws_payload["SecretId"]}.")
+                for secret in scw_list_data["secrets"]:
+                    if secret["name"] == aws_payload["SecretId"]:
+                        real_secret_id = secret["id"]
+                        cache_ids[aws_payload["SecretId"]] = real_secret_id
+
+            if not real_secret_id:
+                raise HTTPException(status_code=404)
+
+            # Get the Secret latest version
+            scw_main_response = await forward_to_scaleway(
+                method="get",
+                path=f"/{real_secret_id}/versions/latest_enabled/access",
+                payload={}
+            )
+        case "secretsmanager.ListSecrets":
+            logger.info(f"Listing secrets for project {SCW_PROJECT_ID}")
+
+            scw_main_response = await forward_to_scaleway(
+                method="get",
+                path=f"?project_id={SCW_PROJECT_ID}",
+                payload={}
+            )
+        case _:
+            raise HTTPException(status_code=405, detail=f"AWS method not allowed.")
+
+    if not scw_main_response:
+        raise HTTPException(status_code=500)
+
+    scw_data = scw_main_response.json()
+    aws_response = scw_data # By default
+
+    # Map the Scaleway response to AWS response format
+    match aws_method:
+        case "secretsmanager.CreateSecret":
+            aws_response = {
+                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{aws_payload["Name"]}",
+                "Name": aws_payload["Name"],
+                "VersionId": str(uuid.uuid4())
+            }
+        case "secretsmanager.GetSecretValue":
+            # Get the Secret's metadata
+            secret_metadata_response = await forward_to_scaleway(
+                method="get",
+                path=f"/{real_secret_id}?project_id={SCW_PROJECT_ID}",
+                payload={}
+            )
             secret_metadata_data = secret_metadata_response.json()
             aws_response = {
-                "ARN": scw_data["secret_id"],
+                "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{secret_metadata_data["name"]}",
                 "Name": secret_metadata_data["name"],
                 "CreatedDate": secret_metadata_data["created_at"],
                 "SecretString": base64.b64decode(scw_data["data"]),
-                "VersionId": scw_data["revision"],
-                "VersionStages": []
+                "VersionId": str(uuid.uuid4()),
+                "VersionStages": ["AWSCURRENT"]
             }
-
-        if aws_method == "ListSecrets":
+        case "secretsmanager.ListSecrets":
             aws_response = {
                 "SecretList": [
                     {
-                        "ARN": secret["id"],
+                        "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:905418020617:secret:{secret["name"]}",
                         "Name": secret["name"],
                         "LastChangedDate": secret["updated_at"],
                         "LastAccessedDate": secret["updated_at"],
                         "Tags": secret["tags"],
                         "CreatedDate": secret["created_at"],
-                        "PrimaryRegion": SCW_REGION
+                        "PrimaryRegion": SCW_REGION,
+                        "SecretVersionsToStages": {
+                            f"{str(uuid.uuid4())}": ["AWSCURRENT"]
+                        }
                     }
                     for secret in scw_data["secrets"]
                 ],
                 "NextToken": None
             }
+        case _:
+            # We shouldn't be in here.
+            raise NotImplementedError(f"Unsupported operation")
 
-        # Default response in the original Scaleway's format
-        return aws_response
-    raise HTTPException(status_code=404, detail="Unsupported endpoint")
+    logger.debug(f"Answering to KES: {aws_response}")
+
+    # Default response in the original Scaleway's format
+    return aws_response
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="debug" if debug else "info",
+        log_config=logging_config
+    )
