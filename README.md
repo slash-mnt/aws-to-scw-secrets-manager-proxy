@@ -79,7 +79,7 @@ aws secretsmanager get-secret-value --secret-id xxxx-xxxx-xxxx-xxxx --endpoint-u
 
 ## KES Usage specific
 
-The KES (MinIO) only requests the key content once, at the first usage.
+The KES (MinIO) keeps the key in its cache for a while. It avoids requesting multiple times keys in a short window of time.
 
 ### Configuring KES
 
