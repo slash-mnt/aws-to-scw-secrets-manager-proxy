@@ -32,6 +32,8 @@ List of covered features:
 * FastAPI
 * `httpx` for HTTP requests
 * `botocore` for AWS signature validation
+* `uvicorn` for HTTP server
+* `uuid` for UUID generation
 * Scaleway API key with Secrets Manager access
 
 Install dependencies:
@@ -76,3 +78,20 @@ aws secretsmanager get-secret-value --secret-id xxxx-xxxx-xxxx-xxxx --endpoint-u
 ## KES Usage specific
 
 The KES (MinIO) only requests the key content once, at the first usage.
+
+### Configuring KES
+
+The only thing to change is the `keystore.aws.secretsmanager.endpoint`, `keystore.aws.secretsmanager.region` and
+`keystore.aws.secretsmanager.credentials`:
+
+```
+keystore:
+     aws:
+       secretsmanager:
+         endpoint: http://localhost:8000 # This is the AWS-to-SCW proxy endpoint
+         region:   fr-par
+         kmskey:   ""
+         credentials:
+           accesskey: "<whatever you want>"
+           secretkey: "<SCW_TOKEN_API>"
+```
