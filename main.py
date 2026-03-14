@@ -46,26 +46,25 @@ cache_ids = {}
 
 async def forward_to_scaleway(method: str, path: str, payload: dict):
     """
-    Asynchronously forwards a request to the Scaleway API using the provided HTTP method,
-    endpoint path, payload, and headers. This method constructs Scaleway-specific headers,
-    formats the endpoint URL, and sends the request.
+    Forwards an HTTP request to a Scaleway API endpoint and returns the response.
 
-    :param method: The HTTP method to use for the request (e.g., "GET", "POST", "PUT", "DELETE").
+    This function uses the `httpx.AsyncClient` to send a request to the Scaleway API. The method of
+    the request (e.g., "get", "post"), the path of the Scaleway endpoint, and any payload to be
+    included in the request are all parameterized. Authentication headers are added automatically.
+
+    The function logs both the request details and the response received from Scaleway for debugging
+    purposes. If the response has a status code indicating an error (>=400), an HTTPException is
+    raised with details from the error response.
+
+    :param method: The HTTP method for the request (e.g., "get", "post").
     :type method: str
-
-    :param path: The endpoint path of the Scaleway API to which the request will be forwarded.
+    :param path: The endpoint path for the Scaleway API request (excluding the base URL).
     :type path: str
-
-    :param payload: The request payload to be sent to the Scaleway API, represented as a dictionary.
+    :param payload: A dictionary containing the request body (ignored for "get" requests).
     :type payload: dict
-
-    :param headers: Additional HTTP headers to include in the request. These headers may override or
-                    supplement the default Scaleway headers.
-    :type headers: dict
-
-    :return: The HTTP response received from the Scaleway API. The response contains meta-information
-             such as status code, headers, and content.
+    :return: The HTTP response object received from the Scaleway API.
     :rtype: httpx.Response
+    :raises HTTPException: If the Scaleway API returns a response with a 4xx or 5xx status code.
     """
     async with httpx.AsyncClient() as client:
         scw_headers = {
@@ -90,19 +89,22 @@ async def forward_to_scaleway(method: str, path: str, payload: dict):
 
 async def validate_aws_signature(request: Request):
     """
-    Validates the AWS Signature Version 4 of an incoming HTTP request. This function
-    ensures that the request contains proper authentication by verifying the provided
-    AWS signature against the expected signature generated based on the request
-    details and preconfigured credentials. It extracts essential headers and validates
-    their format and presence before attempting authentication.
+    Validates the AWS Signature for an incoming HTTP request.
 
-    :param request: The incoming HTTP request to validate.
+    This method checks the Authorization header of the request for a valid
+    AWS Signature Version 4 (SigV4) and ensures it matches the expected credentials
+    and signing process. If the signature is invalid or missing, it raises an
+    HTTPException with an appropriate status code.
+
+    :param request: The HTTP request object containing headers and other details.
     :type request: Request
-    :return: A dictionary containing the validated AWS credentials, including the
-        access key, region, and service.
+
+    :return: A dictionary containing verified AWS credentials including access key,
+        region, and service information if the signature is valid.
     :rtype: dict
-    :raises HTTPException: If the signature is missing, invalid, or another error
-        occurs during validation.
+
+    :raises HTTPException: If the AWS signature is missing, invalid, or if there
+        is a format error in the Authorization header.
     """
     # Retrieves AWS headers
     auth_header = request.headers.get("Authorization", "")
@@ -159,20 +161,17 @@ async def validate_aws_signature(request: Request):
 @app.post("/")
 async def proxy(request: Request):
     """
-    Handles proxying of AWS Secrets Manager requests to Scaleway Secrets Manager, performing necessary
-    request and response mappings between AWS and Scaleway formats. Supports various Secrets Manager
-    operations such as GetSecretValue, CreateSecret, UpdateSecret, and ListSecrets.
+    Handles incoming HTTP requests and provides functionality to proxy them, validate AWS signatures,
+    and forward them to a Scaleway Secrets Manager for handling AWS Secrets Manager emulation. It
+    parses the request, maps AWS Secrets Manager methods to Scaleway's API, and transforms
+    Scaleway responses to their corresponding AWS equivalents.
 
-    :param request: The incoming HTTP request that has been intercepted to be proxied
-                    to Scaleway.
+    :param request: The incoming HTTP request object to be processed.
     :type request: Request
-    :param path: The requested endpoint path to be processed. It supports path-based
-                 mapping for AWS Secrets Manager to Scaleway counterparts.
-    :type path: str
-    :return: A JSON response mapped from Scaleway's format to AWS Secrets Manager's
-             format for supported operations, or as is for unsupported paths.
+    :return: The response in AWS-compliant format if the request is successfully processed.
     :rtype: dict
-    :raises HTTPException: If the requested path is unsupported, a 404 HTTP error is raised.
+    :raises HTTPException: If there are issues such as invalid AWS headers, unsupported methods,
+                           or internal errors during request validation or forwarding.
     """
 
     method = request.method
@@ -332,9 +331,8 @@ async def proxy(request: Request):
             # We shouldn't be in here.
             raise NotImplementedError(f"Unsupported operation")
 
-    logger.debug(f"Answering to KES: {aws_response}")
+    logger.debug(f"Answering to client: {aws_response}")
 
-    # Default response in the original Scaleway's format
     return aws_response
 
 if __name__ == "__main__":
