@@ -57,10 +57,10 @@ Others environment variables are optional:
 ## Run the proxy
 
 ```shell
-python main.py
+python src/main.py
 
 # or
-uvicorn main\:app --host 0.0.0.0 --port 8000
+uvicorn src.main\:app --host 0.0.0.0 --port 8000
 ```
 
 ## Test examples

@@ -40,10 +40,10 @@ RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 COPY --chown=appuser:appuser --from=builder /opt/venv /opt/venv
 
-COPY --chown=appuser:appuser . .
+COPY --chown=appuser:appuser src ./src
 
 USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
