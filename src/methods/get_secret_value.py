@@ -1,6 +1,5 @@
 import base64
 import logging
-import os
 import uuid
 
 from src.lib.aws.credentials import Credentials
@@ -8,7 +7,6 @@ from src.lib.scw_forwarder import forward_to_scaleway, ScalewayException
 from src.methods.mapper import Mapper
 
 logger = logging.getLogger(__name__)
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-3")
 
 # Use a small cache object to store secret ids, avoiding listing secrets everytime.
 # Secret names are unique within a project.
@@ -95,7 +93,7 @@ class GetSecretValueMapper(Mapper):
         )).json()
 
         return {
-            "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{self.project_id}:secret:{metadata["name"]}",
+            "ARN": f"arn:aws:secretsmanager:{aws_credentials.get_region()}:{self.project_id}:secret:{metadata["name"]}",
             "Name": metadata["name"],
             "CreatedDate": metadata["created_at"],
             "SecretString": base64.b64decode(secret["data"]),

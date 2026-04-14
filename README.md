@@ -52,7 +52,6 @@ export SCW_PROJECT_ID="xx-xx-xx"
 Others environment variables are optional:
 
 * `DEFAULT_SECRET_PATH`: holds the secret path within the Scaleway Secrets Manager (default to: `/minio/kes/kes`)
-* `AWS_REGION`: the region displayed in the ARN (defaults to `eu-west-3`)
 
 ## Run the proxy
 

@@ -1,5 +1,4 @@
 import logging
-import os
 import uuid
 
 from src.lib.aws.credentials import Credentials
@@ -7,7 +6,6 @@ from src.lib.scw_forwarder import forward_to_scaleway
 from src.methods.mapper import Mapper
 
 logger = logging.getLogger(__name__)
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-3")
 
 class ListSecretsMapper(Mapper):
     """
@@ -48,13 +46,13 @@ class ListSecretsMapper(Mapper):
         return {
             "SecretList": [
                 {
-                    "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{self.project_id}:secret:{secret["name"]}",
+                    "ARN": f"arn:aws:secretsmanager:{aws_credentials.get_region()}:{self.project_id}:secret:{secret["name"]}",
                     "Name": secret["name"],
                     "LastChangedDate": secret["updated_at"],
                     "LastAccessedDate": secret["updated_at"],
                     "Tags": secret["tags"],
                     "CreatedDate": secret["created_at"],
-                    "PrimaryRegion": aws_credentials["region"],
+                    "PrimaryRegion": aws_credentials.get_region(),
                     "SecretVersionsToStages": {
                         f"{str(uuid.uuid4())}": ["AWSCURRENT"] # Generating a random uuid because the only uuid is the SCW secret id, but it's not relevant here.
                     }

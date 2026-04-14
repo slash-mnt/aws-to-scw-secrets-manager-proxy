@@ -5,6 +5,7 @@ from botocore.awsrequest import AWSRequest
 from fastapi import HTTPException
 import logging
 import re
+import os
 
 from src.lib.aws.credentials import Credentials
 
@@ -39,7 +40,6 @@ async def validate_aws_signature(method: str, path: str, headers: dict, body):
     if not auth_header.startswith("AWS4-HMAC-SHA256"):
         logger.error("AWS Signature missing or invalid")
         raise HTTPException(status_code=401, detail="AWS Signature missing or invalid")
-
 
     # Extracting parts of the signature
     match = re.match(r'AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/([^/]+)/aws4_request, SignedHeaders=([^,]+), Signature=([^,]+)', auth_header)

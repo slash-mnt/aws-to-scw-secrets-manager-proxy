@@ -31,9 +31,6 @@ app = FastAPI()
 SCW_PROJECT_ID = os.getenv("SCW_PROJECT_ID", "scaleway_project_id")
 DEFAULT_SECRET_PATH = os.getenv("DEFAULT_SECRET_PATH", "/minio/kes/key")
 
-# AWS configuration to validate signatures
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-3")
-
 @app.get("/")
 @app.post("/")
 async def proxy(request: Request):
@@ -96,8 +93,10 @@ async def proxy(request: Request):
             case _:
                 raise HTTPException(status_code=405, detail=f"{aws_method} method not supported.")
     except ScalewayException as e:
+        logger.error(f"Scaleway error: {e.get_response()}")
         raise HTTPException(status_code=e.get_status_code(), detail=e.get_response())
     except Exception as e:
+        logger.error(f"Internal error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 import base64
 import logging
-import os
 import uuid
 
 from src.lib.aws.credentials import Credentials
@@ -8,7 +7,6 @@ from src.lib.scw_forwarder import forward_to_scaleway, ScalewayException
 from src.methods.mapper import Mapper
 
 logger = logging.getLogger(__name__)
-AWS_REGION = os.getenv("AWS_REGION", "eu-west-3")
 
 class CreateSecretMapper(Mapper):
     """
@@ -78,7 +76,7 @@ class CreateSecretMapper(Mapper):
         )).json()
 
         return {
-            "ARN": f"arn:aws:secretsmanager:{AWS_REGION}:{self.project_id}:secret:{aws_payload["Name"]}",
+            "ARN": f"arn:aws:secretsmanager:{aws_credentials.get_region()}:{self.project_id}:secret:{aws_payload["Name"]}",
             "Name": aws_payload["Name"],
             "VersionId": str(uuid.uuid4())
         }
